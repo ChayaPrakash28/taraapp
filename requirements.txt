@@ -1,0 +1,6 @@
+Flask
+pydub
+SpeechRecognition
+pybase64
+requests
+gTTS

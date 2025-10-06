@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Talk to Tara ✨</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg: linear-gradient(180deg,#fff8f0 0%, #fff1f7 100%);
+      --pink:#FF7AA2; --blue:#7AD7FF; --muted:#6b6b6b;
+    }
+    *{box-sizing:border-box; font-family: "Poppins", "Segoe UI", Roboto, sans-serif}
+    body{margin:0;min-height:100vh;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{width:100%;max-width:420px;background:#fff;border-radius:18px;padding:22px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.06)}
+    h1{margin:0 0 6px;font-size:22px;color:#4b2c4a}
+    p.lead{margin:0 0 18px;color:var(--muted);font-size:14px}
+    .mic-wrap{position:relative;margin:6px auto 12px auto;width:220px;height:220px}
+    .mic-button{width:180px;height:180px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--blue));border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 12px 30px rgba(122,215,255,0.18);transition:transform .12s}
+    .mic-button:active{transform:translateY(3px)}
+    .mic-button.recording{animation:pulse 1s infinite}
+    @keyframes pulse{0%{transform:scale(1)}50%{transform:scale(1.06)}100%{transform:scale(1)}}
+    .mic-icon{color:white;font-size:64px;filter:drop-shadow(0 4px 12px rgba(0,0,0,0.12))}
+    .status{margin-top:12px;font-size:15px;color:#4b2c4a;display:flex;align-items:center;justify-content:center;gap:10px}
+    .info{margin-top:12px;color:var(--muted);font-size:13px;min-height:18px}
+  </style>
+</head>
+<body>
+  <div class="card" role="main" aria-labelledby="title">
+    <h1 id="title">Talk to Tara 🌟</h1>
+    <p class="lead">Tap once, say "Hey Tara" — she will wake up and chat until you say "Stop Tara".</p>
+
+    <div class="mic-wrap">
+      <button id="micBtn" class="mic-button" aria-pressed="false" aria-label="Talk to Tara">
+        <svg class="mic-icon" viewBox="0 0 24 24" width="64" height="64" aria-hidden="true">
+          <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/>
+          <path fill="currentColor" d="M19 11a7 7 0 0 1-14 0h2a5 5 0 0 0 10 0h2z" opacity="0.12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="status" id="statusBar">
+      <div id="statusText">Tap to talk 🎤</div>
+    </div>
+
+    <div class="info" id="info">Tara listens only in English.</div>
+
+    <audio id="responseAudio" style="display:none" preload="auto"></audio>
+  </div>
+
+<script>
+/* CONFIG - set to your backend endpoint (same origin works as '/upload_audio') */
+const UPLOAD_URL = '/upload_audio';
+const ASK_URL = '/ask';
+const MAX_RECORD_MS = 8000;
+const SILENCE_THRESHOLD = 0.01;
+const SILENCE_LEAD_MS = 850;
+
+const micBtn = document.getElementById('micBtn');
+const statusText = document.getElementById('statusText');
+const info = document.getElementById('info');
+const responseAudio = document.getElementById('responseAudio');
+
+let mediaRecorder = null;
+let audioChunks = [];
+let recording = false;
+let audioContext, analyser, sourceNode;
+let taraActive = false;
+let fallbackStopTimer = null;
+
+function setRecordingUI(isRec){
+  recording = isRec;
+  micBtn.classList.toggle('recording', isRec);
+  micBtn.setAttribute('aria-pressed', isRec ? 'true' : 'false');
+  if (isRec) {
+    statusText.textContent = taraActive ? 'Listening...' : 'Listening (waiting for "Hey Tara")';
+    info.textContent = taraActive ? 'Tara is awake — say something!' : 'Say "Hey Tara" to activate';
+  } else {
+    statusText.textContent = taraActive ? 'Processing...' : 'Tap to talk';
+    info.textContent = taraActive ? 'Tara is thinking...' : 'Tara listens only in English.';
+  }
+}
+
+async function startRecordingAuto(){
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => { if(e.data && e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = handleRecordingStopped;
+    mediaRecorder.start();
+
+    setupSilenceDetection(stream);
+
+    setRecordingUI(true);
+    // fallback
+    fallbackStopTimer = setTimeout(() => {
+      if(mediaRecorder && mediaRecorder.state !== 'inactive') stopRecording();
+    }, MAX_RECORD_MS);
+  } catch(err){
+    console.error('mic err', err);
+    statusText.textContent = 'Microphone access required';
+  }
+}
+
+function stopRecording(){
+  if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  teardownSilenceDetection();
+  clearTimeout(fallbackStopTimer);
+  setRecordingUI(false);
+}
+
+async function handleRecordingStopped(){
+  if (audioChunks.length === 0) {
+    statusText.textContent = 'No audio captured — try again';
+    return;
+  }
+
+  statusText.textContent = 'Uploading...';
+  const blob = new Blob(audioChunks, { type: audioChunks[0].type || 'audio/webm' });
+  const form = new FormData();
+  form.append('audio', blob, 'talk.' + (blob.type.split('/')[1] || 'webm'));
+
+  try {
+    const res = await fetch(UPLOAD_URL, { method: 'POST', body: form });
+    if(!res.ok){
+      const txt = await res.text();
+      console.error('upload failed', res.status, txt);
+      statusText.textContent = 'Upload failed';
+      // if taraActive, restart listening so user can try again
+      if(taraActive) setTimeout(startRecordingAuto, 350);
+      return;
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if(contentType.includes('audio')){
+      const audioBlob = await res.blob();
+      playResponseAudio(audioBlob);
+      return;
+    } else {
+      // JSON response with status
+      const j = await res.json();
+      // cases: { status: 'activated'|'terminated'|'ignored' } or backend may send {status:'activated'} then no audio
+      if (j.status === 'activated') {
+        taraActive = true;
+        statusText.textContent = 'Tara is awake!';
+        // if backend did not send audio, play local activation voice if present (optional)
+        // continue listening automatically
+        setTimeout(startRecordingAuto, 300);
+      } else if (j.status === 'terminated') {
+        taraActive = false;
+        statusText.textContent = 'Tara went to sleep 🌙';
+        // optionally play local terminated.wav - but server should return audio
+      } else if (j.status === 'ignored') {
+        statusText.textContent = 'Say "Hey Tara" to start';
+        // remain idle
+      } else {
+        // fallback: treat as reply and restart if active
+        if (taraActive) setTimeout(startRecordingAuto, 300);
+      }
+    }
+  } catch(err){
+    console.error('upload error', err);
+    statusText.textContent = 'Network error';
+    if (taraActive) setTimeout(startRecordingAuto, 700);
+  } finally {
+    audioChunks = [];
+  }
+}
+
+function playResponseAudio(blob){
+  responseAudio.src = URL.createObjectURL(blob);
+  responseAudio.style.display = 'block';
+  responseAudio.play().catch(e => console.log('playback failed', e));
+  statusText.textContent = 'Tara is talking 🎧';
+  // after playback, auto-restart only if taraActive
+  responseAudio.onended = () => {
+    responseAudio.src = '';
+    responseAudio.style.display = 'none';
+    if (taraActive) {
+      // small delay to avoid immediate retrigger
+      setTimeout(startRecordingAuto, 300);
+    } else {
+      setRecordingUI(false);
+    }
+  };
+}
+
+/* Silence detection based on Web Audio RMS */
+function setupSilenceDetection(stream){
+  try{
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    sourceNode = audioContext.createMediaStreamSource(stream);
+    sourceNode.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    let lastLoud = Date.now();
+
+    function detect(){
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for(let i=0;i<data.length;i++){
+        const v = (data[i]-128)/128;
+        sum += v*v;
+      }
+      const rms = Math.sqrt(sum/data.length);
+
+      if(rms > SILENCE_THRESHOLD){
+        lastLoud = Date.now();
+      } else {
+        if(Date.now() - lastLoud > SILENCE_LEAD_MS){
+          if(mediaRecorder && mediaRecorder.state !== 'inactive'){
+            stopRecording();
+          }
+        }
+      }
+
+      if(recording) requestAnimationFrame(detect);
+    }
+
+    requestAnimationFrame(detect);
+  }catch(err){
+    console.warn('silence detection failed', err);
+  }
+}
+
+function teardownSilenceDetection(){
+  try{ if(sourceNode){ sourceNode.disconnect(); sourceNode=null; } if(analyser){ analyser.disconnect(); analyser=null; } if(audioContext){ audioContext.close(); audioContext=null; } }catch(e){}
+}
+
+micBtn.addEventListener('click', () => {
+  if(!recording){
+    // first manual tap starts the listening flow
+    startRecordingAuto();
+  } else {
+    // if recording, allow manual stop (parents)
+    stopRecording();
+  }
+});
+
+// keyboard accessibility
+micBtn.addEventListener('keydown', e => { if(e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); micBtn.click(); } });
+
+/* ensure we stop recording on page unload */
+window.addEventListener('beforeunload', () => {
+  if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+});
+</script>
+</body>
+</html>

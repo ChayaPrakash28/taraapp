@@ -1,0 +1,12 @@
+{
+  "background_color": "#ffffff",
+  "description": "ngrok is the fastest way to put anything on the internet with a single command.",
+  "dir": "ltr",
+  "display": "standalone",
+  "name": "jaimie-loral-shrinkingly.ngrok-free",
+  "orientation": "any",
+  "scope": "/",
+  "short_name": "jaimie-loral-shrinkingly.ngrok-free",
+  "start_url": "/",
+  "theme_color": "#ffffff"
+}
