@@ -3,7 +3,6 @@
 <head>
   <meta charset="utf-8" />
   <title>Talk to Tara ✨</title>
-  <link rel="manifest" href="/static/manifest.json">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
@@ -37,34 +36,26 @@
   </style>
 </head>
 <body>
-  <div class="card" role="main" aria-labelledby="title">
-    <h1 id="title">Talk to Tara 🌟</h1>
-    <p class="lead">Tap once, say "Hey Tara" — she’ll wake up and chat until you say "Stop Tara".</p>
+  <div class="card">
+    <h1>Talk to Tara 🌟</h1>
+    <p class="lead">Tap once to start — say “Hey Tara” to wake her up. She’ll keep listening until you say “Stop Tara”.</p>
 
     <div class="mic-wrap">
-      <button id="micBtn" class="mic-button" aria-pressed="false" aria-label="Talk to Tara">
-        <svg class="mic-icon" viewBox="0 0 24 24" width="64" height="64" aria-hidden="true">
+      <button id="micBtn" class="mic-button" aria-pressed="false">
+        <svg class="mic-icon" viewBox="0 0 24 24" width="64" height="64">
           <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/>
           <path fill="currentColor" d="M19 11a7 7 0 0 1-14 0h2a5 5 0 0 0 10 0h2z" opacity="0.12"/>
         </svg>
       </button>
     </div>
 
-    <div class="status" id="statusBar">
-      <div id="statusText">Tap to talk 🎤</div>
-    </div>
-
+    <div class="status"><div id="statusText">Tap to start 🎤</div></div>
     <div class="info" id="info">Tara listens only in English.</div>
-
-    <audio id="responseAudio" style="display:none" preload="auto"></audio>
+    <audio id="responseAudio" preload="auto" hidden></audio>
   </div>
 
 <script>
-/* 🌐 Backend URLs on Render */
 const UPLOAD_URL = 'https://taraapp-c1qt.onrender.com/upload_audio';
-const ASK_URL = 'https://taraapp-c1qt.onrender.com/ask';
-
-/* 🎤 Recording configuration */
 const MAX_RECORD_MS = 8000;
 const SILENCE_THRESHOLD = 0.01;
 const SILENCE_LEAD_MS = 850;
@@ -74,179 +65,151 @@ const statusText = document.getElementById('statusText');
 const info = document.getElementById('info');
 const responseAudio = document.getElementById('responseAudio');
 
-let mediaRecorder = null;
-let audioChunks = [];
-let recording = false;
-let audioContext, analyser, sourceNode;
-let taraActive = false;
-let fallbackStopTimer = null;
+let mediaRecorder, audioChunks = [], audioContext, analyser, sourceNode;
+let recording = false, taraActive = false, fallbackStopTimer;
 
-/* 🟢 Request mic permission early (for WebView) */
+// convo tracking
+let convoCount = 0;
+const MAX_CONVO = 10;
+const TERMINATION_WORDS = ["stop tara", "bye tara", "goodbye tara"];
+
 navigator.mediaDevices.getUserMedia({ audio: true })
-  .then(stream => console.log('🎤 Mic access granted'))
-  .catch(err => {
-    console.error('❌ Mic access error:', err);
-    info.textContent = 'Microphone permission denied. Please enable it in app settings.';
-  });
+  .then(() => console.log('🎤 Mic permission granted'))
+  .catch(err => { console.error('Mic error:', err); info.textContent = 'Mic permission needed'; });
 
-function setRecordingUI(isRec){
+function setRecordingUI(isRec) {
   recording = isRec;
   micBtn.classList.toggle('recording', isRec);
-  micBtn.setAttribute('aria-pressed', isRec ? 'true' : 'false');
-  if (isRec) {
-    statusText.textContent = taraActive ? 'Listening...' : 'Listening (waiting for "Hey Tara")';
-    info.textContent = taraActive ? 'Tara is awake — say something!' : 'Say "Hey Tara" to activate';
-  } else {
-    statusText.textContent = taraActive ? 'Processing...' : 'Tap to talk 🎤';
-    info.textContent = taraActive ? 'Tara is thinking...' : 'Tara listens only in English.';
-  }
+  statusText.textContent = isRec ? (taraActive ? 'Listening...' : 'Listening (say "Hey Tara")') : (taraActive ? 'Processing...' : 'Tap to start 🎤');
 }
 
-async function startRecordingAuto(){
+async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
     mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = e => { if(e.data && e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = handleRecordingStopped;
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = processRecording;
     mediaRecorder.start();
 
     setupSilenceDetection(stream);
     setRecordingUI(true);
-    fallbackStopTimer = setTimeout(() => {
-      if(mediaRecorder && mediaRecorder.state !== 'inactive') stopRecording();
-    }, MAX_RECORD_MS);
-  } catch(err){
-    console.error('🎙️ Mic error:', err);
-    statusText.textContent = '🎙️ Microphone access required';
+    fallbackStopTimer = setTimeout(stopRecording, MAX_RECORD_MS);
+  } catch (err) {
+    console.error('Mic start error:', err);
+    statusText.textContent = '🎙️ Mic unavailable';
   }
 }
 
-function stopRecording(){
-  if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   teardownSilenceDetection();
   clearTimeout(fallbackStopTimer);
   setRecordingUI(false);
 }
 
-async function handleRecordingStopped(){
-  if (audioChunks.length === 0) {
-    statusText.textContent = 'No audio captured — try again';
-    return;
-  }
-
+async function processRecording() {
+  if (!audioChunks.length) return;
   statusText.textContent = 'Uploading...';
-  const blob = new Blob(audioChunks, { type: audioChunks[0].type || 'audio/webm' });
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
   const form = new FormData();
-  form.append('audio', blob, 'talk.' + (blob.type.split('/')[1] || 'webm'));
+  form.append('audio', blob, 'talk.webm');
 
   try {
     const res = await fetch(UPLOAD_URL, { method: 'POST', body: form });
-    if(!res.ok){
-      const txt = await res.text();
-      console.error('Upload failed', res.status, txt);
-      statusText.textContent = 'Upload failed ❌';
-      if(taraActive) setTimeout(startRecordingAuto, 350);
-      return;
-    }
-
-    const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    if(contentType.includes('audio')){
+    const type = res.headers.get('content-type') || '';
+    if (type.includes('audio')) {
       const audioBlob = await res.blob();
-      playResponseAudio(audioBlob);
-      return;
+      playAudio(audioBlob);
     } else {
       const j = await res.json();
+
+      // track transcript for termination / max convo
+      if (j && j.transcript) {
+        const text = j.transcript.toLowerCase();
+        convoCount++;
+        if (
+          convoCount >= MAX_CONVO ||
+          TERMINATION_WORDS.some(w => text.includes(w))
+        ) {
+          taraActive = false;
+          statusText.textContent = "🌙 Tara stopped";
+          return; // stop loop
+        }
+      }
+
       if (j.status === 'activated') {
         taraActive = true;
-        statusText.textContent = '✨ Tara is awake!';
-        setTimeout(startRecordingAuto, 300);
+        convoCount = 0;
+        statusText.textContent = '✨ Tara activated';
+        setTimeout(startRecording, 400);
       } else if (j.status === 'terminated') {
         taraActive = false;
-        statusText.textContent = '🌙 Tara went to sleep';
-      } else if (j.status === 'ignored') {
-        statusText.textContent = 'Say "Hey Tara" to start';
+        statusText.textContent = '🌙 Tara sleeping';
+      } else if (taraActive) {
+        setTimeout(startRecording, 300);
       } else {
-        if (taraActive) setTimeout(startRecordingAuto, 300);
+        statusText.textContent = 'Say "Hey Tara"';
       }
     }
-  } catch(err){
-    console.error('⚠️ Upload/network error:', err);
-    statusText.textContent = '⚠️ Network or CORS error';
-    if (taraActive) setTimeout(startRecordingAuto, 700);
+  } catch (err) {
+    console.error('Upload error:', err);
+    if (taraActive) setTimeout(startRecording, 800);
   } finally {
     audioChunks = [];
   }
 }
 
-function playResponseAudio(blob){
+function playAudio(blob) {
   responseAudio.src = URL.createObjectURL(blob);
-  responseAudio.style.display = 'block';
-  responseAudio.play().catch(e => console.log('playback failed', e));
-  statusText.textContent = 'Tara is talking 🎧';
+  responseAudio.play()
+    .then(() => statusText.textContent = 'Tara speaking 🎧')
+    .catch(() => console.warn('Playback failed'));
   responseAudio.onended = () => {
-    responseAudio.src = '';
-    responseAudio.style.display = 'none';
-    if (taraActive) setTimeout(startRecordingAuto, 300);
-    else setRecordingUI(false);
+    if (taraActive) setTimeout(startRecording, 400); // keep looping
   };
 }
 
-/* 🔊 Silence detection */
-function setupSilenceDetection(stream){
-  try {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 512;
-    sourceNode = audioContext.createMediaStreamSource(stream);
-    sourceNode.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    let lastLoud = Date.now();
+function setupSilenceDetection(stream) {
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioContext.createAnalyser();
+  sourceNode = audioContext.createMediaStreamSource(stream);
+  sourceNode.connect(analyser);
+  analyser.fftSize = 512;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  let lastLoud = Date.now();
 
-    function detect(){
-      analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for(let i=0;i<data.length;i++){
-        const v = (data[i]-128)/128;
-        sum += v*v;
-      }
-      const rms = Math.sqrt(sum/data.length);
-
-      if(rms > SILENCE_THRESHOLD){
-        lastLoud = Date.now();
-      } else if(Date.now() - lastLoud > SILENCE_LEAD_MS){
-        if(mediaRecorder && mediaRecorder.state !== 'inactive'){
-          stopRecording();
-        }
-      }
-      if(recording) requestAnimationFrame(detect);
+  function detect() {
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128;
+      sum += v * v;
     }
-    requestAnimationFrame(detect);
-  } catch(err){
-    console.warn('Silence detection failed', err);
+    const rms = Math.sqrt(sum / data.length);
+    if (rms > SILENCE_THRESHOLD) lastLoud = Date.now();
+    else if (Date.now() - lastLoud > SILENCE_LEAD_MS) stopRecording();
+    if (recording) requestAnimationFrame(detect);
   }
+  requestAnimationFrame(detect);
 }
 
-function teardownSilenceDetection(){
-  try {
-    if(sourceNode){ sourceNode.disconnect(); sourceNode=null; }
-    if(analyser){ analyser.disconnect(); analyser=null; }
-    if(audioContext){ audioContext.close(); audioContext=null; }
-  } catch(e){}
+function teardownSilenceDetection() {
+  if (sourceNode) sourceNode.disconnect();
+  if (analyser) analyser.disconnect();
+  if (audioContext) audioContext.close();
 }
 
-/* 🎙️ Event Listeners */
+// 🟢 Tap once to start everything
 micBtn.addEventListener('click', () => {
-  if(!recording) startRecordingAuto();
-  else stopRecording();
-});
-
-micBtn.addEventListener('keydown', e => {
-  if(e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); micBtn.click(); }
-});
-
-window.addEventListener('beforeunload', () => {
-  if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  if (!recording) {
+    taraActive = true;
+    convoCount = 0;
+    startRecording();
+  } else {
+    taraActive = false;
+    statusText.textContent = "⏹️ Stopped manually";
+  }
 });
 </script>
 </body>
