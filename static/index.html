@@ -81,6 +81,14 @@ let audioContext, analyser, sourceNode;
 let taraActive = false;
 let fallbackStopTimer = null;
 
+/* 🟢 Request mic permission early (for WebView) */
+navigator.mediaDevices.getUserMedia({ audio: true })
+  .then(stream => console.log('🎤 Mic access granted'))
+  .catch(err => {
+    console.error('❌ Mic access error:', err);
+    info.textContent = 'Microphone permission denied. Please enable it in app settings.';
+  });
+
 function setRecordingUI(isRec){
   recording = isRec;
   micBtn.classList.toggle('recording', isRec);
@@ -104,13 +112,12 @@ async function startRecordingAuto(){
     mediaRecorder.start();
 
     setupSilenceDetection(stream);
-
     setRecordingUI(true);
     fallbackStopTimer = setTimeout(() => {
       if(mediaRecorder && mediaRecorder.state !== 'inactive') stopRecording();
     }, MAX_RECORD_MS);
   } catch(err){
-    console.error('mic err', err);
+    console.error('🎙️ Mic error:', err);
     statusText.textContent = '🎙️ Microphone access required';
   }
 }
@@ -137,7 +144,7 @@ async function handleRecordingStopped(){
     const res = await fetch(UPLOAD_URL, { method: 'POST', body: form });
     if(!res.ok){
       const txt = await res.text();
-      console.error('upload failed', res.status, txt);
+      console.error('Upload failed', res.status, txt);
       statusText.textContent = 'Upload failed ❌';
       if(taraActive) setTimeout(startRecordingAuto, 350);
       return;
@@ -164,7 +171,7 @@ async function handleRecordingStopped(){
       }
     }
   } catch(err){
-    console.error('upload error', err);
+    console.error('⚠️ Upload/network error:', err);
     statusText.textContent = '⚠️ Network or CORS error';
     if (taraActive) setTimeout(startRecordingAuto, 700);
   } finally {
@@ -216,7 +223,7 @@ function setupSilenceDetection(stream){
     }
     requestAnimationFrame(detect);
   } catch(err){
-    console.warn('silence detection failed', err);
+    console.warn('Silence detection failed', err);
   }
 }
 
