@@ -1,6 +1,6 @@
 Flask
-pydub
+Flask-Cors
 SpeechRecognition
+pydub
 pybase64
 requests
-gTTS
