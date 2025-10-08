@@ -166,8 +166,49 @@ function playAudio(blob) {
     .then(() => statusText.textContent = 'Tara speaking 🎧')
     .catch(() => console.warn('Playback failed'));
   responseAudio.onended = () => {
-    if (taraActive) setTimeout(startRecording, 400); // keep looping
+    if (taraActive) {
+      statusText.textContent = "👂 Waiting for your voice...";
+      waitForUserVoice().then(() => {
+        if (taraActive) startRecording();
+      });
+    }
   };
+}
+
+// 👂 helper: wait until voice is detected before recording
+function waitForUserVoice() {
+  return new Promise(async (resolve) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = ctx.createAnalyser();
+      const src = ctx.createMediaStreamSource(stream);
+      src.connect(analyser);
+      analyser.fftSize = 512;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      function detect() {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        if (rms > 0.02) { // 🔧 adjust threshold if too sensitive
+          ctx.close();
+          stream.getTracks().forEach(t => t.stop());
+          resolve();
+          return;
+        }
+        requestAnimationFrame(detect);
+      }
+      detect();
+    } catch (err) {
+      console.error("Voice wait error:", err);
+      resolve(); // fallback: just continue
+    }
+  });
 }
 
 function setupSilenceDetection(stream) {
